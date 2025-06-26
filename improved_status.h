@@ -1,16 +1,10 @@
 #pragma once
 
+#include "shared_constants.h"
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
-
-#define OK 0
-#define NOT_FOUND -1
-#define NO_SPACE_ERR -2
-#define DUPLICATE_KEY -3
-
-const int MAX_VALUE_LEN = 256;
 const int STATUS_MAX_ENTRIES = 1024;
 
 struct SharedEntry {
