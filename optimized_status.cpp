@@ -206,7 +206,76 @@ int OptimizedStatusRscManager::rehashIfNeeded() {
     return OK;
 }
 
-int OptimizedStatusRscManager::addRsc(int rsc_key, const std::string &rsc_value) {
+int OptimizedStatusRscManager::removeRsc(int rsc_key) {
+    pthread_mutex_lock(&shared_data_->table_mutex);
+    
+    uint32_t hash_val = hash(rsc_key);
+    int pos = findEntry(rsc_key, hash_val);
+    
+    if (pos == -1) {
+        pthread_mutex_unlock(&shared_data_->table_mutex);
+        return NOT_FOUND;
+    }
+    
+    shared_data_->hash_table[pos].state = DELETED;
+    shared_data_->current_count--;
+    shared_data_->deleted_count++;
+    
+    pthread_mutex_unlock(&shared_data_->table_mutex);
+    return OK;
+}
+
+int OptimizedStatusRscManager::batchUpdateRsc(const std::map<int, std::string> &updated_map) {
+    pthread_mutex_lock(&shared_data_->table_mutex);
+    
+    int success_count = 0;
+    for (const auto &pair : updated_map) {
+        if (pair.second.length() >= MAX_VALUE_LEN) {
+            continue;
+        }
+        
+        uint32_t hash_val = hash(pair.first);
+        int pos = findEntry(pair.first, hash_val);
+        
+        if (pos != -1) {
+            HashEntry &entry = shared_data_->hash_table[pos];
+            strncpy(entry.value, pair.second.c_str(), MAX_VALUE_LEN - 1);
+            entry.value[MAX_VALUE_LEN - 1] = '\0';
+            success_count++;
+        }
+    }
+    
+    pthread_mutex_unlock(&shared_data_->table_mutex);
+    return success_count;
+}
+
+int OptimizedStatusRscManager::batchGetRsc(std::map<int, std::string> &fetched_map) {
+    pthread_mutex_lock(&shared_data_->table_mutex);
+    
+    fetched_map.clear();
+    for (int i = 0; i < HASH_TABLE_SIZE; ++i) {
+        if (shared_data_->hash_table[i].state == OCCUPIED) {
+            fetched_map[shared_data_->hash_table[i].key] = shared_data_->hash_table[i].value;
+        }
+    }
+    
+    pthread_mutex_unlock(&shared_data_->table_mutex);
+    return fetched_map.size();
+}
+
+int OptimizedStatusRscManager::cleanup() {
+    if (shm_unlink("/optimized_status_memory") == -1) {
+        if (errno != ENOENT) {
+            return -1;
+        }
+    }
+    return OK;
+}
+
+// 实现接口方法
+int OptimizedStatusRscManager::addRsc(int rsc_key, const std::string& rsc_value) {
+    if (rsc_value.empty()) return -1;
+    
     if (rsc_value.length() >= MAX_VALUE_LEN) {
         return NO_SPACE_ERR;
     }
@@ -241,9 +310,29 @@ int OptimizedStatusRscManager::addRsc(int rsc_key, const std::string &rsc_value)
     
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return OK;
+
 }
 
-int OptimizedStatusRscManager::updateRsc(int rsc_key, const std::string &rsc_value) {
+std::string OptimizedStatusRscManager::getRsc(int rsc_key) {
+    pthread_mutex_lock(&shared_data_->table_mutex);
+    
+    uint32_t hash_val = hash(rsc_key);
+    int pos = findEntry(rsc_key, hash_val);
+    
+    if (pos == -1) {
+        pthread_mutex_unlock(&shared_data_->table_mutex);
+        return "";
+    }
+    
+    std::string result(shared_data_->hash_table[pos].value);
+    pthread_mutex_unlock(&shared_data_->table_mutex);
+    return result;
+
+}
+
+int OptimizedStatusRscManager::updateRsc(int rsc_key, const std::string& rsc_value) {
+    if (rsc_value.empty()) return -1;
+    
     if (rsc_value.length() >= MAX_VALUE_LEN) {
         return NO_SPACE_ERR;
     }
@@ -264,9 +353,12 @@ int OptimizedStatusRscManager::updateRsc(int rsc_key, const std::string &rsc_val
     
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return OK;
+
 }
 
-int OptimizedStatusRscManager::upsertRsc(int rsc_key, const std::string &rsc_value) {
+int OptimizedStatusRscManager::upsertRsc(int rsc_key, const std::string& rsc_value) {
+    if (rsc_value.empty()) return -1;
+    
     if (rsc_value.length() >= MAX_VALUE_LEN) {
         return NO_SPACE_ERR;
     }
@@ -311,44 +403,10 @@ int OptimizedStatusRscManager::upsertRsc(int rsc_key, const std::string &rsc_val
     
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return OK;
+
 }
 
-std::string OptimizedStatusRscManager::getRsc(int rsc_key) {
-    pthread_mutex_lock(&shared_data_->table_mutex);
-    
-    uint32_t hash_val = hash(rsc_key);
-    int pos = findEntry(rsc_key, hash_val);
-    
-    if (pos == -1) {
-        pthread_mutex_unlock(&shared_data_->table_mutex);
-        return "";
-    }
-    
-    std::string result(shared_data_->hash_table[pos].value);
-    pthread_mutex_unlock(&shared_data_->table_mutex);
-    return result;
-}
-
-int OptimizedStatusRscManager::removeRsc(int rsc_key) {
-    pthread_mutex_lock(&shared_data_->table_mutex);
-    
-    uint32_t hash_val = hash(rsc_key);
-    int pos = findEntry(rsc_key, hash_val);
-    
-    if (pos == -1) {
-        pthread_mutex_unlock(&shared_data_->table_mutex);
-        return NOT_FOUND;
-    }
-    
-    shared_data_->hash_table[pos].state = DELETED;
-    shared_data_->current_count--;
-    shared_data_->deleted_count++;
-    
-    pthread_mutex_unlock(&shared_data_->table_mutex);
-    return OK;
-}
-
-bool OptimizedStatusRscManager::isContain(int rsc_key) {
+int OptimizedStatusRscManager::isContain(int rsc_key) {
     pthread_mutex_lock(&shared_data_->table_mutex);
     
     uint32_t hash_val = hash(rsc_key);
@@ -356,44 +414,7 @@ bool OptimizedStatusRscManager::isContain(int rsc_key) {
     
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return pos != -1;
-}
 
-int OptimizedStatusRscManager::batchUpdateRsc(const std::map<int, std::string> &updated_map) {
-    pthread_mutex_lock(&shared_data_->table_mutex);
-    
-    int success_count = 0;
-    for (const auto &pair : updated_map) {
-        if (pair.second.length() >= MAX_VALUE_LEN) {
-            continue;
-        }
-        
-        uint32_t hash_val = hash(pair.first);
-        int pos = findEntry(pair.first, hash_val);
-        
-        if (pos != -1) {
-            HashEntry &entry = shared_data_->hash_table[pos];
-            strncpy(entry.value, pair.second.c_str(), MAX_VALUE_LEN - 1);
-            entry.value[MAX_VALUE_LEN - 1] = '\0';
-            success_count++;
-        }
-    }
-    
-    pthread_mutex_unlock(&shared_data_->table_mutex);
-    return success_count;
-}
-
-int OptimizedStatusRscManager::batchGetRsc(std::map<int, std::string> &fetched_map) {
-    pthread_mutex_lock(&shared_data_->table_mutex);
-    
-    fetched_map.clear();
-    for (int i = 0; i < HASH_TABLE_SIZE; ++i) {
-        if (shared_data_->hash_table[i].state == OCCUPIED) {
-            fetched_map[shared_data_->hash_table[i].key] = shared_data_->hash_table[i].value;
-        }
-    }
-    
-    pthread_mutex_unlock(&shared_data_->table_mutex);
-    return fetched_map.size();
 }
 
 int OptimizedStatusRscManager::rscNum() {
@@ -401,6 +422,7 @@ int OptimizedStatusRscManager::rscNum() {
     int count = shared_data_->current_count;
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return count;
+
 }
 
 int OptimizedStatusRscManager::clearRsc() {
@@ -414,6 +436,7 @@ int OptimizedStatusRscManager::clearRsc() {
     
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return OK;
+
 }
 
 double OptimizedStatusRscManager::getLoadFactor() {
@@ -421,6 +444,7 @@ double OptimizedStatusRscManager::getLoadFactor() {
     double load_factor = static_cast<double>(shared_data_->current_count) / HASH_TABLE_SIZE;
     pthread_mutex_unlock(&shared_data_->table_mutex);
     return load_factor;
+
 }
 
 void OptimizedStatusRscManager::printStats() {
@@ -469,13 +493,5 @@ void OptimizedStatusRscManager::printStats() {
     }
     
     pthread_mutex_unlock(&shared_data_->table_mutex);
-}
 
-int OptimizedStatusRscManager::cleanup() {
-    if (shm_unlink("/optimized_status_memory") == -1) {
-        if (errno != ENOENT) {
-            return -1;
-        }
-    }
-    return OK;
 }
